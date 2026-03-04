@@ -2,22 +2,67 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mirrored Video Side-by-Side</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mirrored Video Side-by-Side – WebGPU</title>
+
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:#000; overflow:hidden; height:100vh; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-
-.video-container { position:fixed; inset:0; display:flex; }
-canvas { flex:1; display:block; }
-
-.overlay { position:fixed; inset:0; background:linear-gradient(to bottom right, rgba(0,0,0,0.6), rgba(0,0,0,0.3)); pointer-events:none; z-index:1; }
-
-.content { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:white; text-align:center; backdrop-filter:blur(10px); background:rgba(255,255,255,0.08); padding:3rem 4rem; border-radius:20px; border:1px solid rgba(255,255,255,0.15); box-shadow:0 20px 40px rgba(0,0,0,0.6); z-index:2; }
-
-button { margin-top:1rem; padding:0.8rem 2rem; font-size:1rem; cursor:pointer; border-radius:8px; border:none; background:#fff; color:#000; }
+body {
+  background:#000;
+  overflow:hidden;
+  height:100vh;
+  font-family:system-ui,sans-serif;
+  color:white;
+}
+.video-container {
+  position:fixed;
+  inset:0;
+  display:flex;
+  background:#111;
+}
+canvas {
+  flex:1;
+  display:block;
+  background:#000;
+}
+.overlay {
+  position:fixed;
+  inset:0;
+  background:linear-gradient(to bottom right,rgba(0,0,0,0.7),rgba(0,0,0,0.4));
+  pointer-events:none;
+  z-index:10;
+  transition:opacity .8s;
+}
+.content {
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  z-index:20;
+  text-align:center;
+  backdrop-filter:blur(12px);
+  background:rgba(40,40,60,.5);
+  padding:2.5rem 4rem;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.15);
+  box-shadow:0 15px 40px rgba(0,0,0,.8);
+  transition:all .6s;
+}
+button {
+  padding:1rem 2.5rem;
+  font-size:1.15rem;
+  cursor:pointer;
+  border:none;
+  border-radius:12px;
+  background:#fff;
+  color:#000;
+  font-weight:bold;
+}
+.hidden { opacity:0; pointer-events:none; }
+#errorMsg { margin-top:1rem; color:#ff7777; display:none; }
 </style>
 </head>
+
 <body>
 
 <div class="video-container">
@@ -25,75 +70,193 @@ button { margin-top:1rem; padding:0.8rem 2rem; font-size:1rem; cursor:pointer; b
   <canvas id="rightCanvas"></canvas>
 </div>
 
-<div class="overlay"></div>
-
-<div class="content">
+<div class="overlay" id="overlay"></div>
+<div class="content" id="content">
   <h1>Mirrored Side-by-Side Video</h1>
-  <p>Left side is mirrored, right side is original. Audio split left/right.</p>
+  <p>Left: normal • Right: mirrored<br>Audio hard panned L/R</p>
   <button id="startBtn">Start</button>
+  <div id="errorMsg"></div>
 </div>
 
-<!-- Hidden video -->
-<video id="sourceVideo" src="video.mp4" playsinline preload="auto" style="display:none;"></video>
+<video id="sourceVideo" playsinline preload="auto" crossorigin="anonymous" style="display:none;">
+  <source src="video.mp4" type="video/mp4">
+</video>
 
-<script>
-const leftCanvas = document.getElementById('leftCanvas');
-const rightCanvas = document.getElementById('rightCanvas');
-const leftCtx = leftCanvas.getContext('2d');
-const rightCtx = rightCanvas.getContext('2d');
+<script type="module">
+const leftCanvas  = document.getElementById("leftCanvas");
+const rightCanvas = document.getElementById("rightCanvas");
+const video       = document.getElementById("sourceVideo");
+const overlay     = document.getElementById("overlay");
+const content     = document.getElementById("content");
+const startBtn    = document.getElementById("startBtn");
+const errorMsg    = document.getElementById("errorMsg");
 
-const video = document.getElementById('sourceVideo');
-const overlay = document.querySelector('.overlay');
-const content = document.querySelector('.content');
+let device, contextLeft, contextRight, format;
+let pipeline, sampler;
+let audioCtx;
 
-// Resize canvases to fit window
+/* ---------- Resize ---------- */
 function resize() {
-  leftCanvas.width = window.innerWidth / 2;
-  leftCanvas.height = window.innerHeight;
-  rightCanvas.width = window.innerWidth / 2;
-  rightCanvas.height = window.innerHeight;
+  const w = Math.floor(window.innerWidth / 2);
+  const h = window.innerHeight;
+  leftCanvas.width = rightCanvas.width = w;
+  leftCanvas.height = rightCanvas.height = h;
 }
-window.addEventListener('resize', resize);
+window.addEventListener("resize", resize);
 resize();
 
-// Web Audio API for stereo split
-const AudioContext = window.AudioContext || window.webkitAudioContext;
-const audioCtx = new AudioContext();
-const source = audioCtx.createMediaElementSource(video);
-const leftPanner = audioCtx.createStereoPanner();
-const rightPanner = audioCtx.createStereoPanner();
-leftPanner.pan.value = -1;
-rightPanner.pan.value = 1;
-source.connect(leftPanner).connect(audioCtx.destination);
-source.connect(rightPanner).connect(audioCtx.destination);
+/* ---------- Audio ---------- */
+function initAudio() {
+  if (audioCtx) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new AC();
 
-// Draw loop
-function draw() {
-  const w = leftCanvas.width;
-  const h = leftCanvas.height;
+  const src = audioCtx.createMediaElementSource(video);
+  const leftPan  = audioCtx.createStereoPanner();
+  const rightPan = audioCtx.createStereoPanner();
+  leftPan.pan.value  = -1;
+  rightPan.pan.value =  1;
 
-  // Left mirrored
-  leftCtx.save();
-  leftCtx.scale(-1, 1);
-  leftCtx.drawImage(video, -w, 0, w, h);
-  leftCtx.restore();
-
-  // Right normal
-  rightCtx.drawImage(video, 0, 0, w, h);
-
-  requestAnimationFrame(draw);
+  src.connect(leftPan).connect(audioCtx.destination);
+  src.connect(rightPan).connect(audioCtx.destination);
 }
 
-// Start button
-document.getElementById('startBtn').addEventListener('click', async () => {
-  await audioCtx.resume();
+/* ---------- WebGPU Init ---------- */
+async function initWebGPU() {
+  if (!navigator.gpu) throw new Error("WebGPU not supported.");
 
-  overlay.style.display = 'none';
-  content.style.display = 'none';
+  const adapter = await navigator.gpu.requestAdapter();
+  device = await adapter.requestDevice();
+  format = navigator.gpu.getPreferredCanvasFormat();
 
-  video.play();
-  draw();
-});
+  contextLeft  = leftCanvas.getContext("webgpu");
+  contextRight = rightCanvas.getContext("webgpu");
+
+  contextLeft.configure({ device, format, alphaMode:"opaque" });
+  contextRight.configure({ device, format, alphaMode:"opaque" });
+
+  sampler = device.createSampler({
+    magFilter:"linear",
+    minFilter:"linear"
+  });
+
+  const shader = device.createShaderModule({
+    code: `
+      struct Uniforms { mirror : f32 };
+
+      struct VSOut {
+        @builtin(position) pos : vec4<f32>,
+        @location(0) uv : vec2<f32>
+      };
+
+      @vertex
+      fn vs(@builtin(vertex_index) i : u32) -> VSOut {
+        var pos = array<vec2<f32>,6>(
+          vec2(-1,-1), vec2(1,-1), vec2(-1,1),
+          vec2(-1,1),  vec2(1,-1), vec2(1,1)
+        );
+        var uv = array<vec2<f32>,6>(
+          vec2(0,1), vec2(1,1), vec2(0,0),
+          vec2(0,0), vec2(1,1), vec2(1,0)
+        );
+        var out:VSOut;
+        out.pos = vec4(pos[i],0,1);
+        out.uv = uv[i];
+        return out;
+      }
+
+      @group(0) @binding(0) var samp : sampler;
+      @group(0) @binding(1) var tex  : texture_external;
+      @group(0) @binding(2) var<uniform> uni : Uniforms;
+
+      @fragment
+      fn fs(in:VSOut) -> @location(0) vec4<f32> {
+        var uv = in.uv;
+        if (uni.mirror > 0.5) {
+          uv.x = 1.0 - uv.x;
+        }
+        return textureSampleBaseClampToEdge(tex, samp, uv);
+      }
+    `
+  });
+
+  pipeline = device.createRenderPipeline({
+    layout:"auto",
+    vertex:{ module:shader, entryPoint:"vs" },
+    fragment:{ module:shader, entryPoint:"fs", targets:[{format}] },
+    primitive:{ topology:"triangle-list" }
+  });
+}
+
+/* ---------- Draw ---------- */
+function draw(context, mirrorFlag) {
+  const texture = device.importExternalTexture({ source: video });
+
+  const uniformBuffer = device.createBuffer({
+    size:4,
+    usage:GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  });
+
+  device.queue.writeBuffer(uniformBuffer,0,new Float32Array([mirrorFlag]));
+
+  const bindGroup = device.createBindGroup({
+    layout:pipeline.getBindGroupLayout(0),
+    entries:[
+      { binding:0, resource:sampler },
+      { binding:1, resource:texture },
+      { binding:2, resource:{ buffer:uniformBuffer } }
+    ]
+  });
+
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginRenderPass({
+    colorAttachments:[{
+      view:context.getCurrentTexture().createView(),
+      loadOp:"clear",
+      clearValue:{ r:0,g:0,b:0,a:1 },
+      storeOp:"store"
+    }]
+  });
+
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0,bindGroup);
+  pass.draw(6);
+  pass.end();
+
+  device.queue.submit([encoder.finish()]);
+}
+
+/* ---------- Frame Loop (never stops) ---------- */
+function frame() {
+  if (!video.paused) {
+    draw(contextLeft, 0.0);  // normal
+    draw(contextRight,1.0);  // mirrored
+  }
+  video.requestVideoFrameCallback(frame);
+}
+
+/* ---------- Start ---------- */
+async function start() {
+  try {
+    await initWebGPU();
+
+    video.loop = true;          // infinite loop
+    await video.play();
+
+    initAudio();
+
+    overlay.classList.add("hidden");
+    content.classList.add("hidden");
+
+    video.requestVideoFrameCallback(frame);
+
+  } catch (err) {
+    errorMsg.textContent = err.message;
+    errorMsg.style.display = "block";
+  }
+}
+
+startBtn.addEventListener("click", start);
 </script>
 
 </body>
