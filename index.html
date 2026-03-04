@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mirrored Video Side-by-Side</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; height:100vh; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+
+.video-container { position:fixed; inset:0; display:flex; }
+canvas { flex:1; display:block; }
+
+.overlay { position:fixed; inset:0; background:linear-gradient(to bottom right, rgba(0,0,0,0.6), rgba(0,0,0,0.3)); pointer-events:none; z-index:1; }
+
+.content { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:white; text-align:center; backdrop-filter:blur(10px); background:rgba(255,255,255,0.08); padding:3rem 4rem; border-radius:20px; border:1px solid rgba(255,255,255,0.15); box-shadow:0 20px 40px rgba(0,0,0,0.6); z-index:2; }
+
+button { margin-top:1rem; padding:0.8rem 2rem; font-size:1rem; cursor:pointer; border-radius:8px; border:none; background:#fff; color:#000; }
+</style>
+</head>
+<body>
+
+<div class="video-container">
+  <canvas id="leftCanvas"></canvas>
+  <canvas id="rightCanvas"></canvas>
+</div>
+
+<div class="overlay"></div>
+
+<div class="content">
+  <h1>Mirrored Side-by-Side Video</h1>
+  <p>Left side is mirrored, right side is original. Audio split left/right.</p>
+  <button id="startBtn">Start</button>
+</div>
+
+<!-- Hidden video -->
+<video id="sourceVideo" src="video.mp4" playsinline preload="auto" style="display:none;"></video>
+
+<script>
+const leftCanvas = document.getElementById('leftCanvas');
+const rightCanvas = document.getElementById('rightCanvas');
+const leftCtx = leftCanvas.getContext('2d');
+const rightCtx = rightCanvas.getContext('2d');
+
+const video = document.getElementById('sourceVideo');
+const overlay = document.querySelector('.overlay');
+const content = document.querySelector('.content');
+
+// Resize canvases to fit window
+function resize() {
+  leftCanvas.width = window.innerWidth / 2;
+  leftCanvas.height = window.innerHeight;
+  rightCanvas.width = window.innerWidth / 2;
+  rightCanvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Web Audio API for stereo split
+const AudioContext = window.AudioContext || window.webkitAudioContext;
+const audioCtx = new AudioContext();
+const source = audioCtx.createMediaElementSource(video);
+const leftPanner = audioCtx.createStereoPanner();
+const rightPanner = audioCtx.createStereoPanner();
+leftPanner.pan.value = -1;
+rightPanner.pan.value = 1;
+source.connect(leftPanner).connect(audioCtx.destination);
+source.connect(rightPanner).connect(audioCtx.destination);
+
+// Draw loop
+function draw() {
+  const w = leftCanvas.width;
+  const h = leftCanvas.height;
+
+  // Left mirrored
+  leftCtx.save();
+  leftCtx.scale(-1, 1);
+  leftCtx.drawImage(video, -w, 0, w, h);
+  leftCtx.restore();
+
+  // Right normal
+  rightCtx.drawImage(video, 0, 0, w, h);
+
+  requestAnimationFrame(draw);
+}
+
+// Start button
+document.getElementById('startBtn').addEventListener('click', async () => {
+  await audioCtx.resume();
+
+  overlay.style.display = 'none';
+  content.style.display = 'none';
+
+  video.play();
+  draw();
+});
+</script>
+
+</body>
+</html>
